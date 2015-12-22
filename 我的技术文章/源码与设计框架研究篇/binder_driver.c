@@ -132,17 +132,21 @@ enum binder_stat_types {
 	BINDER_STAT_TRANSACTION_COMPLETE,
 	BINDER_STAT_COUNT
 };
+// 
 struct binder_stats {
 	int br[_IOC_NR(BR_FAILED_REPLY) + 1];
 	int bc[_IOC_NR(BC_DEAD_BINDER_DONE) + 1];
 	int obj_created[BINDER_STAT_COUNT];
 	int obj_deleted[BINDER_STAT_COUNT];
 };
+// 内核静态变量binder_stats 整体记录用
 static struct binder_stats binder_stats;
+// 删除
 static inline void binder_stats_deleted(enum binder_stat_types type)
 {
 	binder_stats.obj_deleted[type]++;
 }
+// 添加
 static inline void binder_stats_created(enum binder_stat_types type)
 {
 	binder_stats.obj_created[type]++;
@@ -887,6 +891,7 @@ static struct binder_node *binder_new_node(struct binder_proc *proc,
 		     node->ptr, node->cookie);
 	return node;
 }
+// 增加引用计数 target 1 0 null
 static int binder_inc_node(struct binder_node *node, int strong, int internal,
 			   struct list_head *target_list)
 {
@@ -1119,9 +1124,11 @@ static int binder_dec_ref(struct binder_ref *ref, int strong)
 static void binder_pop_transaction(struct binder_thread *target_thread,
 				   struct binder_transaction *t)
 {
+	// 这里只是简单的出栈操作
 	if (target_thread) {
 		BUG_ON(target_thread->transaction_stack != t);
 		BUG_ON(target_thread->transaction_stack->from != target_thread);
+		// 出栈操作，frome->parent往下移动一层
 		target_thread->transaction_stack =
 			target_thread->transaction_stack->from_parent;
 		t->from = NULL;
@@ -1253,16 +1260,26 @@ static void binder_transaction_buffer_release(struct binder_proc *proc,
 	}
 }
 // 这个函数只会在binder_thread_write中调用
+// 调用该函数传递下去的参数有：当前task所在进程在binder驱动中对应的binder_proc结构体、
+// 和当前task在binder驱动中对应的binder_thread结构体；struct binder_transaction_data结构体指针，
+// 最后一个参数表示当前发送的是请求还是回复。
+// 这个函数将发送请求和发送回复放在了一个函数，而且包含了数据包中有binder在传输的处理情况，
+// 所以显得很复杂，不太容易看懂，大概有400多行吧！
 static void binder_transaction(struct binder_proc *proc,
 			       struct binder_thread *thread,
 			       struct binder_transaction_data *tr, int reply)
 {
+	// // 发送请求时使用的内核传输数据结构
 	struct binder_transaction *t;
 	struct binder_work *tcomplete;
 	size_t *offp, *off_end;
+	 // 目标进程对应的binder_proc
 	struct binder_proc *target_proc;
+	// 目标线程对应的binder_thread
 	struct binder_thread *target_thread = NULL;
+	//目标binder实体在内核中的节点结构体
 	struct binder_node *target_node = NULL;
+	// 
 	struct list_head *target_list;
 	wait_queue_head_t *target_wait;
 	struct binder_transaction *in_reply_to = NULL;
@@ -1296,12 +1313,18 @@ static void binder_transaction(struct binder_proc *proc,
 	} 
 	// 如过是请求
 	else {
+		// 如果这里目标服务是普通服务 不是SMgr管理类进程 
 		if (tr->target.handle) {
 			struct binder_ref *ref;
+	    // 从proc进程中，这里其实是自己的进程，查询出bind_node的引用bind_ref,
+		// 对于一般的进程，会在getService的时候有Servicemanager为自己添加
+		// 注意handle 是记录在本地的，用来本地索引ref用的 
 			ref = binder_get_ref(proc, tr->target.handle);
 		//￥
 			target_node = ref->node;
 		} else {
+		// 如果这里目标服务是Servicemanager服务 
+		// 如果ioctl想和SMgr的binder实体建立联系，需要使tr->target.handle = 0
 			target_node = binder_context_mgr_node;
 	    //￥
 		}
@@ -1324,6 +1347,7 @@ static void binder_transaction(struct binder_proc *proc,
 		}
 	}
 	// 这里如果目标是线程，那么唤醒的就是线程的等待队列，如果是进程，就唤醒进程等待队列
+	// 其实唤醒的时候，对应是queuen ，
 	if (target_thread) {
 		e->to_thread = target_thread->pid;
 		target_list = &target_thread->todo;
@@ -1337,14 +1361,20 @@ static void binder_transaction(struct binder_proc *proc,
 	t = kzalloc(sizeof(*t), GFP_KERNEL);
 	//￥
 	binder_stats_created(BINDER_STAT_TRANSACTION);
+	//分配本次单边传输需要使用的binder_work结构体内存
 	tcomplete = kzalloc(sizeof(*tcomplete), GFP_KERNEL);
 	//￥
 	binder_stats_created(BINDER_STAT_TRANSACTION_COMPLETE);
 	t->debug_id = ++binder_last_id;
 	e->debug_id = t->debug_id;
+    //￥ ;
+    //   reply 是不是回复 如果是同步传输的发送边，这里将当前的binder_thre
 	if (!reply && !(tr->flags & TF_ONE_WAY))
+	//  如果是同步传输的发送边，这里将当前的binder_thread记录
+	// 在binder_transaction.from中，以供在同步传输的回复边时，驱动可以根据这个找到回复的目的task。
 		t->from = thread;
 	else
+		/* 如果是BC_REPLY或者是异步传输，这里不需要记录和返回信息相关的信息。*/
 		t->from = NULL;
     //事物的目标线程  
     t->to_thread = target_thread;
@@ -1352,6 +1382,7 @@ static void binder_transaction(struct binder_proc *proc,
 	//事务的目标进程  
 	t->to_proc = target_proc;    
 	t->to_thread = target_thread;
+	 // 这个保持不变，驱动不会关心它
 	t->code = tr->code;
 	t->flags = tr->flags;
 	//线程的优先级的迁移
@@ -1377,15 +1408,21 @@ static void binder_transaction(struct binder_proc *proc,
 	t->buffer->target_node = target_node;
 
 	trace_binder_transaction_alloc_buf(t->buffer);
+	// 
 	if (target_node)
 		binder_inc_node(target_node, 1, 0, NULL);
+	// 计算出存放flat_binder_object结构体偏移数组的起始地址，4字节对齐。
 	offp = (size_t *)(t->buffer->data + ALIGN(tr->data_size, sizeof(void *)));
+	   /* struct flat_binder_object是binder在进程之间传输的表示方式 */
+       /* 这里就是完成binder通讯单边时候在用户进程同内核buffer之间的一次拷贝动作 */
+	  // 这里的数据拷贝，其实是拷贝到目标进程中去，因为t本身就是在目标进程的内核空间中分配的，
 	if (copy_from_user(t->buffer->data, tr->data.ptr.buffer, tr->data_size)) {
 		binder_user_error("binder: %d:%d got transaction with invalid "
 			"data ptr\n", proc->pid, thread->pid);
 		return_error = BR_FAILED_REPLY;
 		goto err_copy_data_failed;
 	}
+	 // 拷贝内嵌在传输数据中的flat_binder_object结构体偏移数组
 	if (copy_from_user(offp, tr->data.ptr.offsets, tr->offsets_size)) {
     //￥
 	}
@@ -1397,26 +1434,35 @@ static void binder_transaction(struct binder_proc *proc,
 		goto err_bad_offset;
 	}
 	//这里不一定一定执行，比如 MediaPlayer getMediaplayerservie的时候，传递数据中不包含对象, off_end为null 
+	// 这里就不会执行，一定要携带传输的数据才会走到这里
 	//off_end = (void *)offp + tr->offsets_size; 
+	//flat_binder_object结构体偏移数组的结束地址
 	off_end = (void *)offp + tr->offsets_size;
 	for (; offp < off_end; offp++) {
 		struct flat_binder_object *fp;
+   /* *offp是t->buffer中第一个flat_binder_object结构体的位置偏移,相
+   当于t->buffer->data的偏移，这里的if语句用来判断binder偏移数组的第一个
+   元素所指向的flat_binder_object结构体地址是否是在t->buffer->data的有效范
+   围内，或者数据的总大小就小于一个flat_binder_object的大小，或者说这个数组的元
+   素根本就没有4字节对齐(一个指针在32位平台上用4个字节表示)。*/
 		if (*offp > t->buffer->data_size - sizeof(*fp) ||
 		    t->buffer->data_size < sizeof(*fp) ||
 		    !IS_ALIGNED(*offp, sizeof(void *))) {
-			binder_user_error("binder: %d:%d got transaction with "
-				"invalid offset, %zd\n",
-				proc->pid, thread->pid, *offp);
-			return_error = BR_FAILED_REPLY;
-			goto err_bad_offset;
+			 // $
 		}
+		// 取得第一个flat_binder_object结构体指针
 		fp = (struct flat_binder_object *)(t->buffer->data + *offp);
 		switch (fp->type) {
+        // 只有具有binder实体的进程才有权利发送这类binder。这里其实是在binder实体中
 		case BINDER_TYPE_BINDER:
 		case BINDER_TYPE_WEAK_BINDER: {
 			struct binder_ref *ref;
+			// 根据flat_binder_object.binder这个binder实体在进程间的地
+			// 址搜索当前进程的binder_proc->nodes红黑树，看看是否已经创建了binder_node内核节点
+			// 如果没创建，在自己的进程中为自己创建node节点 
 			struct binder_node *node = binder_get_node(proc, fp->binder);
 			if (node == NULL) {
+				// 如果为空，创建
 				node = binder_new_node(proc, fp->binder, fp->cookie);
 				if (node == NULL) {
 					return_error = BR_FAILED_REPLY;
@@ -1425,6 +1471,7 @@ static void binder_transaction(struct binder_proc *proc,
 				node->min_priority = fp->flags & FLAT_BINDER_FLAG_PRIORITY_MASK;
 				node->accept_fds = !!(fp->flags & FLAT_BINDER_FLAG_ACCEPTS_FDS);
 			}
+			// 校验
 			if (fp->cookie != node->cookie) {
 				binder_user_error("binder: %d:%d sending u%p "
 					"node %d, cookie mismatch %p != %p\n",
@@ -1440,6 +1487,7 @@ static void binder_transaction(struct binder_proc *proc,
 			// 在目标进程中为它创建引用，其实类似（在ServiceManager中创建bind_ref其实可以说，Servicemanager拥有全部Service的引用）
 			ref = binder_get_ref_for_node(target_proc, node);
  			// ￥
+ 			// 修改flat_binder_object数据结构的type和handle域，接下来要传给接收方
 			if (fp->type == BINDER_TYPE_BINDER)
 				fp->type = BINDER_TYPE_HANDLE;
 			else
@@ -1455,19 +1503,16 @@ static void binder_transaction(struct binder_proc *proc,
 		} break;
 		case BINDER_TYPE_HANDLE:
 		case BINDER_TYPE_WEAK_HANDLE: {
+		     // 通过引用号取得当前进程中对应的binder_ref结构体
 			struct binder_ref *ref = binder_get_ref(proc, fp->handle);
-			if (ref == NULL) {
-				binder_user_error("binder: %d:%d got "
-					"transaction with invalid "
-					"handle, %ld\n", proc->pid,
-					thread->pid, fp->handle);
-				return_error = BR_FAILED_REPLY;
-				goto err_binder_get_ref_failed;
-			}
+	         // ￥
 			if (security_binder_transfer_binder(proc->tsk, target_proc->tsk)) {
 				return_error = BR_FAILED_REPLY;
 				goto err_binder_get_ref_failed;
 			}
+			/* 如果目标进程正好是提供该引用号对应的binder实体的进程，那么按照下面的方式
+			修改flat_binder_object的相应域: type 和 binder，cookie。*/ 
+			// 不太理解？？？
 			if (ref->node->proc == target_proc) {
 				if (fp->type == BINDER_TYPE_HANDLE)
 					fp->type = BINDER_TYPE_BINDER;
@@ -1477,25 +1522,22 @@ static void binder_transaction(struct binder_proc *proc,
 				fp->cookie = ref->node->cookie;
 				binder_inc_node(ref->node, fp->type == BINDER_TYPE_BINDER, 0, NULL);
 				trace_binder_transaction_ref_to_node(t, ref);
-				binder_debug(BINDER_DEBUG_TRANSACTION,
-					     "        ref %d desc %d -> node %d u%p\n",
-					     ref->debug_id, ref->desc, ref->node->debug_id,
-					     ref->node->ptr);
+				 // $
 			} else {
+ 			/* 否则会在目标进程的refs_by_node红黑树中先搜索看是否之前有创建过对应的b
+ 			inder_ref，如果没有找到，那么就需要为ref->node节点在目标进程中新建一个目标进程的bi
+ 			nder_ref挂入红黑树refs_by_node中。*/
 				struct binder_ref *new_ref;
 				new_ref = binder_get_ref_for_node(target_proc, ref->node);
 				if (new_ref == NULL) {
 					return_error = BR_FAILED_REPLY;
 					goto err_binder_get_ref_for_node_failed;
 				}
+				//此时只需要将此域修改为新建binder_ref的引用号
 				fp->handle = new_ref->desc;
 				binder_inc_ref(new_ref, fp->type == BINDER_TYPE_HANDLE, NULL);
 				trace_binder_transaction_ref_to_ref(t, ref,
 								    new_ref);
-				binder_debug(BINDER_DEBUG_TRANSACTION,
-					     "        ref %d desc %d -> ref %d desc %d (node %d)\n",
-					     ref->debug_id, ref->desc, new_ref->debug_id,
-					     new_ref->desc, ref->node->debug_id);
 			}
 		} break;
 		case BINDER_TYPE_FD: {
@@ -1540,49 +1582,81 @@ static void binder_transaction(struct binder_proc *proc,
 			fp->handle = target_fd;
 		} break;
 		default:
-			binder_user_error("binder: %d:%d got transactio"
-				"n with invalid object type, %lx\n",
-				proc->pid, thread->pid, fp->type);
-			return_error = BR_FAILED_REPLY;
+	 
 			goto err_bad_object_type;
 		}
 	}
-	if (reply) {
+if (reply) {
 		BUG_ON(t->buffer->async_transaction != 0);
+		// 这里是出栈操作
 		binder_pop_transaction(target_thread, in_reply_to);
-	} else if (!(t->flags & TF_ONE_WAY)) {
+
+	} 
+	// 如果是同步传输，需要返回
+	else if (!(t->flags & TF_ONE_WAY)) {
 		BUG_ON(t->buffer->async_transaction != 0);
+		// 需要带返回数据的标记
 		t->need_reply = 1;
+		// binder_transaction的的上一层任务，由于是堆栈，所以抽象为parent，惹歧义啊！这里是入栈操作
 		t->from_parent = thread->transaction_stack;
+		// 正在处理的事务栈，为何会有事务栈呢？因为在等待返回的过程中，还会有事务插入进去，比如null的reply
 		thread->transaction_stack = t;
-	} else {
+  
+	/* 
+	如果本次发起传输之前，当前task没有处于通讯过程中的话，这里必然为
+	NULL。而且第一次发起传输时，这里也是为NULl。如果之前有异步传输没处理完，没处理完，就还没有release，
+	那么这里不为null（为了自己），如果之前本task正在处理接收请求，这里也不为NULL(为了其他进程)，
+    这里将传输中间数据结构保存在binder_transaction链表顶部。这个transaction_stack实际
+	上是管理这一个链表，只不过这个指针时时指向最新加入该链表的成员，最先加入的成员在最底部，有点类似于
+	stack，所以这里取名叫transaction_stack。
+	*/
+	} 
+	// 异步传输，不需要返回
+	else {
+		// 不需要返回的情况下 ，下面是对异步通讯的分流处理
 		BUG_ON(target_node == NULL);
 		BUG_ON(t->buffer->async_transaction != 1);
+		/* 如果目标task仍然还有一个异步需要处理的话，该标志为1。*/
 		if (target_node->has_async_transaction) {
+			/* 将当前的这个的异步传输任务转入目标进程binder_node的异步等待队列async_todo中。为了加到异步中秋*/ 
 			target_list = &target_node->async_todo;
+			// 将后来的异步交互转入异步等待队列。就不唤醒了，因为有在执行的
 			target_wait = NULL;
 		} else
+		// 如果没有，设置目标节点存在异步任务，设置也是在这里设置的，
 			target_node->has_async_transaction = 1;
 	}
+	//
 	t->work.type = BINDER_WORK_TRANSACTION;
+	// 添加到目标的任务列表
 	list_add_tail(&t->work.entry, target_list);
 	tcomplete->type = BINDER_WORK_TRANSACTION_COMPLETE;
+	// 添加到请求线程，也就是自己的待处理任务列表
 	list_add_tail(&tcomplete->entry, &thread->todo);
+	// 唤醒目标进程，查看是否需要唤醒，如果target_wait！=null
 	if (target_wait)
 		wake_up_interruptible(target_wait);
 	return;
+ 	//err: ￥异常处理 。。。
 }
 int binder_thread_write(struct binder_proc *proc, struct binder_thread *thread,
 			void __user *buffer, int size, signed long *consumed)
 {
+/* ioctl传进来的只是结构体binder_write_read，而对于其中write和read的buffer却还是存在于用户空间，
+  下面用get_user来获取用户空间buffer中的值 */
 	uint32_t cmd;
 	void __user *ptr = buffer + *consumed;
 	void __user *end = buffer + size;
+	// 一次ioctl的发送过程，可以在bwr.write_buffer中按照格式：命令+参数，
+	// 组织多个命令包发送给接收方，所以这里使用了循环的方式来一个一个地处理这些命令包。
 	while (ptr < end && thread->return_error == BR_OK) {
+		// 取得用户空间buffer中每个命令包的命令字
 		if (get_user(cmd, (uint32_t __user *)ptr))
 			return -EFAULT;
+		  // ptr 指针前移，命令字是一个字的长度
 		ptr += sizeof(uint32_t);
 		trace_binder_command(cmd);
+		 // 提取出cmd中的命令序号，对全局统计数据结构中bc对应命令使用域加1
 		if (_IOC_NR(cmd) < ARRAY_SIZE(binder_stats.bc)) {
 			binder_stats.bc[_IOC_NR(cmd)]++;
 			proc->stats.bc[_IOC_NR(cmd)]++;
@@ -1753,10 +1827,20 @@ int binder_thread_write(struct binder_proc *proc, struct binder_thread *thread,
 		}
 		case BC_TRANSACTION:
 		case BC_REPLY: {
+   /* 
+    理解binder驱动的关键之一在于认清下面两个结构体的区别和联系：
+    struct  binder_transaction_data 和struct binder_transaction ，
+    前者是用于在用户空间中表示传输的数据，而后者是binder驱动在内核空间中
+    来表示传输的数据，接下来所做的工作很大部分就是完成前者向后者转换，而对于
+    binder读取函数binder_thread_read()则主要是完成从后者向前者转换。
+    */
 			struct binder_transaction_data tr;
+			// 先将传输数据结构从用户空间拷贝到内核空间
 			if (copy_from_user(&tr, ptr, sizeof(tr)))
 				return -EFAULT;
+			// 指针向前移动
 			ptr += sizeof(tr);
+			// cmd == BC_REPLY 就表示需要异步传输，不需要等待回复数据
 			binder_transaction(proc, thread, &tr, cmd == BC_REPLY);
 			break;
 		}
@@ -1962,6 +2046,10 @@ static int binder_has_thread_work(struct binder_thread *thread)
 	return !list_empty(&thread->todo) || thread->return_error != BR_OK ||
 		(thread->looper & BINDER_LOOPER_STATE_NEED_RETURN);
 }
+// 读取
+// 当前task所在的进程对应的binder_proc和binder_thread结构体指针，
+// 用户空间的read_buffer地址，想读取数据的大小，已经打开binder节点
+// 的时候是否是非阻塞打开，默认情况下是阻塞打开文件的。
 static int binder_thread_read(struct binder_proc *proc,
 			      struct binder_thread *thread,
 			      void  __user *buffer, int size,
@@ -1971,32 +2059,27 @@ static int binder_thread_read(struct binder_proc *proc,
 	void __user *end = buffer + size;
 	int ret = 0;
 	int wait_for_proc_work;
+	
+	// 如果实际读取到的大小等于0，那么将会在返回的数据包中插入BR_NOOP的命令字。
 	if (*consumed == 0) {
 		if (put_user(BR_NOOP, (uint32_t __user *)ptr))
 			return -EFAULT;
 		ptr += sizeof(uint32_t);
 	}
 retry:
+   /* 
+   该标志表示当前task是要去等待处理proc中全局的todo还是自己本task的todo队列中的任务。
+   两个条件决定这个标志是否为1，当前task的binder_transaction这个链表为NULL, 它记录着
+   本task上是否有传输正在进行；第二个条件是当前task的私有任务队列为NULL。
+   */
 	wait_for_proc_work = thread->transaction_stack == NULL &&
 				list_empty(&thread->todo);
 	if (thread->return_error != BR_OK && ptr < end) {
-		if (thread->return_error2 != BR_OK) {
-			if (put_user(thread->return_error2, (uint32_t __user *)ptr))
-				return -EFAULT;
-			ptr += sizeof(uint32_t);
-			binder_stat_br(proc, thread, thread->return_error2);
-			if (ptr == end)
-				goto done;
-			thread->return_error2 = BR_OK;
-		}
-		if (put_user(thread->return_error, (uint32_t __user *)ptr))
-			return -EFAULT;
-		ptr += sizeof(uint32_t);
-		binder_stat_br(proc, thread, thread->return_error);
-		thread->return_error = BR_OK;
-		goto done;
+	 // $￥
 	}
+	// 表明线程即将进入等待状态。
 	thread->looper |= BINDER_LOOPER_STATE_WAITING;
+	// 就绪等待任务的空闲线程数加1。
 	if (wait_for_proc_work)
 		proc->ready_threads++;
 	binder_unlock(__func__);
@@ -2004,6 +2087,7 @@ retry:
 				   !!thread->transaction_stack,
 				   !list_empty(&thread->todo));
 	if (wait_for_proc_work) {
+		// 进程等待
 		if (!(thread->looper & (BINDER_LOOPER_STATE_REGISTERED |
 					BINDER_LOOPER_STATE_ENTERED))) {
 			binder_user_error("binder: %d:%d ERROR: Thread waiting "
@@ -2016,14 +2100,18 @@ retry:
 		binder_set_nice(proc->default_priority);
 		if (non_block) {
 			if (!binder_has_proc_work(proc, thread))
+				// 返回try again的提示。
 				ret = -EAGAIN;
 		} else
+			// 当前task互斥等待在进程全局的等待队列中。 
 			ret = wait_event_freezable_exclusive(proc->wait, binder_has_proc_work(proc, thread));
 	} else {
+		// 线程等待
 		if (non_block) {
 			if (!binder_has_thread_work(thread))
 				ret = -EAGAIN;
 		} else
+		 /* 当前task等待在task自己的等待队列中(binder_thread.todo)，永远只有其自己。，只有自己*/
 			ret = wait_event_freezable(thread->wait, binder_has_thread_work(thread));
 	}
 	binder_lock(__func__);
@@ -2037,21 +2125,28 @@ retry:
 		struct binder_transaction_data tr;
 		struct binder_work *w;
 		struct binder_transaction *t = NULL;
+		// 当前task私有todo任务队列里有任务
 		if (!list_empty(&thread->todo))
+			// 取出todo队列中第一个binder_work结构体
 			w = list_first_entry(&thread->todo, struct binder_work, entry);
 		else if (!list_empty(&proc->todo) && wait_for_proc_work)
+			// proc->todo是当前task所属进程的公共todo任务队列
 			w = list_first_entry(&proc->todo, struct binder_work, entry);
 		else {
 			if (ptr - buffer == 4 && !(thread->looper & BINDER_LOOPER_STATE_NEED_RETURN)) /* no data added */
+			/* buffer中只有一个BR_NOOP,  同时当前task的BINDER_LOOPER_STATE_NEED_RETURN标志已被清除，那么就跳转回去重新睡眠等待。*/
 				goto retry;
+				// 否则就跳出这个while循环，读函数返回。
 			break;
 		}
 		if (end - ptr < sizeof(tr) + 4)
 			break;
 		switch (w->type) {
 		case BINDER_WORK_TRANSACTION: {
+			// 通过binder_work：w反向找到所属的binder_transaction数据结构指针
 			t = container_of(w, struct binder_transaction, work);
 		} break;
+		// 返回的completetask
 		case BINDER_WORK_TRANSACTION_COMPLETE: {
 			cmd = BR_TRANSACTION_COMPLETE;
 			if (put_user(cmd, (uint32_t __user *)ptr))
@@ -2160,10 +2255,16 @@ retry:
 		}
 		if (!t)
 			continue;
+		/* 这里的t所指向的binder_transaction结构体就是前面发送者task建立的binder_transaction数据结构，
+		   所以这里如果为NULL，说明有异常。*/
 		BUG_ON(t->buffer == NULL);
+		/* 可以为NULL，如: BC_REPLY的时候。这个值是发送者task填入，对发送者来说才有意义。*/
 		if (t->buffer->target_node) {
+			// 下面开始将binder_transaction转换成binder_transaction_data结构了。
 			struct binder_node *target_node = t->buffer->target_node;
+			 // binder实体的用户空间指针
 			tr.target.ptr = target_node->ptr;
+			// binder实体的额外数据
 			tr.cookie =  target_node->cookie;
 			t->saved_priority = task_nice(current);
 			if (t->priority < target_node->min_priority &&
@@ -2174,15 +2275,17 @@ retry:
 				binder_set_nice(target_node->min_priority);
 			cmd = BR_TRANSACTION;
 		} else {
+			 // 如果是发送者自己发送的回复数据：BC_REPLY
 			tr.target.ptr = NULL;
 			tr.cookie = NULL;
-			cmd = BR_REPLY;
+			cmd = BR_REPLY;  // 收到BR_REPLY
 		}
 		tr.code = t->code;
 		tr.flags = t->flags;
 		tr.sender_euid = t->sender_euid;
 		if (t->from) {
 			struct task_struct *sender = t->from->proc->tsk;
+			 // 记录发送线程的binder_thread
 			tr.sender_pid = task_tgid_nr_ns(sender,
 							current->nsproxy->pid_ns);
 		} else {
@@ -2192,13 +2295,21 @@ retry:
 		tr.data_size = t->buffer->data_size;
 		//偏移
 		tr.offsets_size = t->buffer->offsets_size;
+		/* 接收方在这里完成数据从内核空间到用户空间的转移，其实没有实际的数据移动，
+		而是buffer地址在内核空间和用户空间中的转换: user_buffer_offset。*/
 		//得到事物对应的内核数据在用户空间的访问地址  
 		tr.data.ptr.buffer = (void *)t->buffer->data +
-					proc->user_buffer_offset;
+					proc->user_buffer_offset;;/* 需要加上这个偏移量才是用户空间
+的地址，这个偏移量是在mmap函数中计算出来的。*/
 
 		tr.data.ptr.offsets = tr.data.ptr.buffer +
 					ALIGN(t->buffer->data_size,
 					    sizeof(void *));
+
+		/* 拷贝cmd和binder_transaction_data数据回用户空间,上层只需要准备这二者
+			的内存空间即可。其余的数据均在binder_buffer之中呆着。
+			两个数据结构
+		*/
 		if (put_user(cmd, (uint32_t __user *)ptr))
 			return -EFAULT;
 		ptr += sizeof(uint32_t);
@@ -2207,23 +2318,20 @@ retry:
 		ptr += sizeof(tr);
 		trace_binder_transaction_received(t);
 		binder_stat_br(proc, thread, cmd);
-		binder_debug(BINDER_DEBUG_TRANSACTION,
-			     "binder: %d:%d %s %d %d:%d, cmd %d"
-			     "size %zd-%zd ptr %p-%p\n",
-			     proc->pid, thread->pid,
-			     (cmd == BR_TRANSACTION) ? "BR_TRANSACTION" :
-			     "BR_REPLY",
-			     t->debug_id, t->from ? t->from->proc->pid : 0,
-			     t->from ? t->from->pid : 0, cmd,
-			     t->buffer->data_size, t->buffer->offsets_size,
-			     tr.data.ptr.buffer, tr.data.ptr.offsets);
+ 		// $
+		 // 从todo队列中删除对应的binder_work。
 		list_del(&t->work.entry);
 		t->buffer->allow_user_free = 1;
+		{//同步，请求数据 接收方
 		if (cmd == BR_TRANSACTION && !(t->flags & TF_ONE_WAY)) {
+		/* 这表示了同一个binder_transaction在发送task和接收task中都
+		有修改的部分。 发送task和接收task的binder_thread.transaction_stack
+		指向的是同一个binder_transcation结构体。*/
 			t->to_parent = thread->transaction_stack;
 			t->to_thread = thread;
 			thread->transaction_stack = t;
 		} else {
+			// 发送方，等待回复方
 			t->buffer->transaction = NULL;
 			kfree(t);
 			binder_stats_deleted(BINDER_STAT_TRANSACTION);
@@ -2297,9 +2405,12 @@ static struct binder_thread *binder_get_thread(struct binder_proc *proc)
 	struct binder_thread *thread = NULL;
 	struct rb_node *parent = NULL;
 	struct rb_node **p = &proc->threads.rb_node;
+	// 搜索红黑树binder_proc.threads  // *p是一个rb_node的指针
 	while (*p) {
 		parent = *p;
+		 // 通过结构体成员的指针地址，得到这个结构体的地址
 		thread = rb_entry(parent, struct binder_thread, rb_node);
+		// 这颗红黑树是以task的pid为索引值 // 按照大小排列，有点类似二分法 //如果找到这个binder_thread结构体，立即退出查找，否则*p最终为NULL
 		if (current->pid < thread->pid)
 			p = &(*p)->rb_left;
 		else if (current->pid > thread->pid)
@@ -2307,21 +2418,29 @@ static struct binder_thread *binder_get_thread(struct binder_proc *proc)
 		else
 			break;
 	}
+	// 如果没找到，也就是当前task第一次调用ioctl的时候，会新建binder_thread数据结构
 	if (*p == NULL) {
 		thread = kzalloc(sizeof(*thread), GFP_KERNEL);
 		if (thread == NULL)
 			return NULL;
+		// 在binder_stats全局统计数据中，为新建的binder_thread对应的统计项加1
 		binder_stats_created(BINDER_STAT_THREAD);
+		 // 记录下binder驱动中对主进程描述的结构体
 		thread->proc = proc;
+        // 当前task的PID
 		thread->pid = current->pid;
+		// 初始化每一个task的私有等待队列
 		init_waitqueue_head(&thread->wait);
+		 // 初始化每一个task的私有任务队列
 		INIT_LIST_HEAD(&thread->todo);
 		rb_link_node(&thread->rb_node, parent, p);
+		// 将新建的binder_thread结构体加入当前进程的红黑树binder_proc.threads中
 		rb_insert_color(&thread->rb_node, &proc->threads);
 		thread->looper |= BINDER_LOOPER_STATE_NEED_RETURN;
 		thread->return_error = BR_OK;
 		thread->return_error2 = BR_OK;
 	}
+	 // 返回查找到的或者新建的binder_thread结构体指针
 	return thread;
 }
 static int binder_free_thread(struct binder_proc *proc,
@@ -2388,10 +2507,14 @@ static unsigned int binder_poll(struct file *filp,
 	}
 	return 0;
 }
+ // 对于异步传输，在上层空间传下来的数据结构binder_transcation_data中的flags域中可以体现出来，
+// 也就是flags的TF_ONE_WAY位为1，就表示需要异步传输，不需要等待回复数据。
 static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int ret;
+	// 当前进程对应的binder_proc 
 	struct binder_proc *proc = filp->private_data;
+	 // 进程的每个线程在binder驱动中的表示
 	struct binder_thread *thread;
 	unsigned int size = _IOC_SIZE(cmd);
 	void __user *ubuf = (void __user *)arg;
@@ -2401,11 +2524,9 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	if (ret)
 		goto err_unlocked;
 	binder_lock(__func__);
+	/* 查找当前task对应的binder_thread结构体，如果没找到就新建一个binder_thread，同时将其加入binder_proc的threads的红黑树中。*/
 	thread = binder_get_thread(proc);
-	if (thread == NULL) {
-		ret = -ENOMEM;
-		goto err;
-	}
+    // ￥
 	switch (cmd) {
 	case BINDER_WRITE_READ: {
 		struct binder_write_read bwr;
@@ -2421,9 +2542,12 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			     "binder: %d:%d write %ld at %08lx, read %ld at %08lx\n",
 			     proc->pid, thread->pid, bwr.write_size, bwr.write_buffer,
 			     bwr.read_size, bwr.read_buffer);
+		//  > 0, 表示本次ioctl有待发送的数据
 		if (bwr.write_size > 0) {
+			// 写数据
 			ret = binder_thread_write(proc, thread, (void __user *)bwr.write_buffer, bwr.write_size, &bwr.write_consumed);
 			trace_binder_write_done(ret);
+			// 成功返回0，出错小于0
 			if (ret < 0) {
 				bwr.read_consumed = 0;
 				if (copy_to_user(ubuf, &bwr, sizeof(bwr)))
@@ -2431,9 +2555,12 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 				goto err;
 			}
 		}
+		//> 0表示本次ioctl想接收数据
 		if (bwr.read_size > 0) {
+			// binder驱动接收读数据函数，这里会阻塞，然后被唤醒
 			ret = binder_thread_read(proc, thread, (void __user *)bwr.read_buffer, bwr.read_size, &bwr.read_consumed, filp->f_flags & O_NONBLOCK);
 			trace_binder_read_done(ret);
+			 /* 读返回的时候如果发现todo任务队列中有待处理的任务，那么将会唤醒binder_proc.wait中下一个等待着的空闲线程。*/
 			if (!list_empty(&proc->todo))
 				wake_up_interruptible(&proc->wait);
 			if (ret < 0) {
@@ -2442,10 +2569,7 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 				goto err;
 			}
 		}
-		binder_debug(BINDER_DEBUG_READ_WRITE,
-			     "binder: %d:%d wrote %ld of %ld, read return %ld of %ld\n",
-			     proc->pid, thread->pid, bwr.write_consumed, bwr.write_size,
-			     bwr.read_consumed, bwr.read_size);
+      //   返回binder_write_read
 		if (copy_to_user(ubuf, &bwr, sizeof(bwr))) {
 			ret = -EFAULT;
 			goto err;
