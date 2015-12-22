@@ -1296,15 +1296,12 @@ static void binder_transaction(struct binder_proc *proc,
 	} 
 	// 如过是请求
 	else {
-		// 如果这里目标服务是普通服务
 		if (tr->target.handle) {
 			struct binder_ref *ref;
-	    // 从proc进程中，这里其实是自己的进程，查询出bind_node的引用bind_ref,对于一般的进程，会在getService的时候有Servicemanager为自己添加
 			ref = binder_get_ref(proc, tr->target.handle);
 		//￥
 			target_node = ref->node;
 		} else {
-		// 如果这里目标服务是Servicemanager服务
 			target_node = binder_context_mgr_node;
 	    //￥
 		}
@@ -1345,9 +1342,7 @@ static void binder_transaction(struct binder_proc *proc,
 	binder_stats_created(BINDER_STAT_TRANSACTION_COMPLETE);
 	t->debug_id = ++binder_last_id;
 	e->debug_id = t->debug_id;
-    //￥
 	if (!reply && !(tr->flags & TF_ONE_WAY))
-	// 为了将来的回调使用
 		t->from = thread;
 	else
 		t->from = NULL;
@@ -1391,7 +1386,6 @@ static void binder_transaction(struct binder_proc *proc,
 		return_error = BR_FAILED_REPLY;
 		goto err_copy_data_failed;
 	}
-	// 这里的数据拷贝，其实是拷贝到目标进程中去，因为t本身就是在目标进程的内核空间中分配的，
 	if (copy_from_user(offp, tr->data.ptr.offsets, tr->offsets_size)) {
     //￥
 	}
@@ -1403,7 +1397,6 @@ static void binder_transaction(struct binder_proc *proc,
 		goto err_bad_offset;
 	}
 	//这里不一定一定执行，比如 MediaPlayer getMediaplayerservie的时候，传递数据中不包含对象, off_end为null 
-	// 这里就不会执行
 	//off_end = (void *)offp + tr->offsets_size; 
 	off_end = (void *)offp + tr->offsets_size;
 	for (; offp < off_end; offp++) {
@@ -1422,7 +1415,6 @@ static void binder_transaction(struct binder_proc *proc,
 		case BINDER_TYPE_BINDER:
 		case BINDER_TYPE_WEAK_BINDER: {
 			struct binder_ref *ref;
-			// 在自己的进程中为自己创建node节点
 			struct binder_node *node = binder_get_node(proc, fp->binder);
 			if (node == NULL) {
 				node = binder_new_node(proc, fp->binder, fp->cookie);
@@ -1562,7 +1554,6 @@ static void binder_transaction(struct binder_proc *proc,
 		BUG_ON(t->buffer->async_transaction != 0);
 		t->need_reply = 1;
 		t->from_parent = thread->transaction_stack;
-		// 这里为了将来的返回数据通信
 		thread->transaction_stack = t;
 	} else {
 		BUG_ON(target_node == NULL);
@@ -1580,46 +1571,6 @@ static void binder_transaction(struct binder_proc *proc,
 	if (target_wait)
 		wake_up_interruptible(target_wait);
 	return;
-err_get_unused_fd_failed:
-err_fget_failed:
-err_fd_not_allowed:
-err_binder_get_ref_for_node_failed:
-err_binder_get_ref_failed:
-err_binder_new_node_failed:
-err_bad_object_type:
-err_bad_offset:
-err_copy_data_failed:
-	trace_binder_transaction_failed_buffer_release(t->buffer);
-	binder_transaction_buffer_release(target_proc, t->buffer, offp);
-	t->buffer->transaction = NULL;
-	binder_free_buf(target_proc, t->buffer);
-err_binder_alloc_buf_failed:
-	kfree(tcomplete);
-	binder_stats_deleted(BINDER_STAT_TRANSACTION_COMPLETE);
-err_alloc_tcomplete_failed:
-	kfree(t);
-	binder_stats_deleted(BINDER_STAT_TRANSACTION);
-err_alloc_t_failed:
-err_bad_call_stack:
-err_empty_call_stack:
-err_dead_binder:
-err_invalid_target_handle:
-err_no_context_mgr_node:
-	binder_debug(BINDER_DEBUG_FAILED_TRANSACTION,
-		     "binder: %d:%d transaction failed %d, size %zd-%zd\n",
-		     proc->pid, thread->pid, return_error,
-		     tr->data_size, tr->offsets_size);
-	{
-		struct binder_transaction_log_entry *fe;
-		fe = binder_transaction_log_add(&binder_transaction_log_failed);
-		*fe = *e;
-	}
-	BUG_ON(thread->return_error != BR_OK);
-	if (in_reply_to) {
-		thread->return_error = BR_TRANSACTION_COMPLETE;
-		binder_send_failed_reply(in_reply_to, return_error);
-	} else
-		thread->return_error = return_error;
 }
 int binder_thread_write(struct binder_proc *proc, struct binder_thread *thread,
 			void __user *buffer, int size, signed long *consumed)
