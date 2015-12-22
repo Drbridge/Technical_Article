@@ -1294,12 +1294,13 @@ static void binder_transaction(struct binder_proc *proc,
 	e->offsets_size = tr->offsets_size;
 	// 如过是返回
 	if (reply) {
-		// 
+		// 这里的in_reply_to其实是在Server进程或者线程
 		in_reply_to = thread->transaction_stack;
 	   // ￥
 		binder_set_nice(in_reply_to->saved_priority);
+		// 这里是判断是否是正确的返回线程
 		if (in_reply_to->to_thread != thread) {
-       // ￥
+         // ￥
 		}
 		thread->transaction_stack = in_reply_to->to_parent;
 		// 获取目标线程，这里是在请求发送是写入的
@@ -1311,7 +1312,7 @@ static void binder_transaction(struct binder_proc *proc,
 		// 根据目标线程获取目标进程
 		target_proc = target_thread->proc;
 	} 
-	// 如过是请求
+	   // 如过是请求
 	else {
 		// 如果这里目标服务是普通服务 不是SMgr管理类进程 
 		if (tr->target.handle) {
@@ -1328,16 +1329,17 @@ static void binder_transaction(struct binder_proc *proc,
 			target_node = binder_context_mgr_node;
 	    //￥
 		}
-
 		e->to_node = target_node->debug_id;
 		// 获取目标进程
 		target_proc = target_node->proc;
-	    //￥
+	    //￥ 错误处理
+	    // 这里如何获取 target->thread（如果有的化）， 目标进程或者线程，ref 对应node会有记录
 		if (!(tr->flags & TF_ONE_WAY) && thread->transaction_stack) {
 			struct binder_transaction *tmp;
+			// 目前肯定只有自己，因为阻塞，只能有自己
 			tmp = thread->transaction_stack;
 			if (tmp->to_thread != thread) {
-		 // $
+		    // $
 			}
 			while (tmp) {
 				if (tmp->from && tmp->from->proc == target_proc)
@@ -1427,11 +1429,7 @@ static void binder_transaction(struct binder_proc *proc,
     //￥
 	}
 	if (!IS_ALIGNED(tr->offsets_size, sizeof(size_t))) {
-		binder_user_error("binder: %d:%d got transaction with "
-			"invalid offsets size, %zd\n",
-			proc->pid, thread->pid, tr->offsets_size);
-		return_error = BR_FAILED_REPLY;
-		goto err_bad_offset;
+ 	// ￥
 	}
 	//这里不一定一定执行，比如 MediaPlayer getMediaplayerservie的时候，传递数据中不包含对象, off_end为null 
 	// 这里就不会执行，一定要携带传输的数据才会走到这里
@@ -1473,12 +1471,7 @@ static void binder_transaction(struct binder_proc *proc,
 			}
 			// 校验
 			if (fp->cookie != node->cookie) {
-				binder_user_error("binder: %d:%d sending u%p "
-					"node %d, cookie mismatch %p != %p\n",
-					proc->pid, thread->pid,
-					fp->binder, node->debug_id,
-					fp->cookie, node->cookie);
-				goto err_binder_get_ref_for_node_failed;
+			 // #
 			}
 			if (security_binder_transfer_binder(proc->tsk, target_proc->tsk)) {
 				return_error = BR_FAILED_REPLY;
@@ -1592,7 +1585,7 @@ if (reply) {
 		binder_pop_transaction(target_thread, in_reply_to);
 
 	} 
-	// 如果是同步传输，需要返回
+	// 如果是同步传输，请求方需要获取返回
 	else if (!(t->flags & TF_ONE_WAY)) {
 		BUG_ON(t->buffer->async_transaction != 0);
 		// 需要带返回数据的标记
@@ -1605,7 +1598,7 @@ if (reply) {
 	/* 
 	如果本次发起传输之前，当前task没有处于通讯过程中的话，这里必然为
 	NULL。而且第一次发起传输时，这里也是为NULl。如果之前有异步传输没处理完，没处理完，就还没有release，
-	那么这里不为null（为了自己），如果之前本task正在处理接收请求，这里也不为NULL(为了其他进程)，
+	那么这里不为null（为了自己，因为自己之前的任务还在执行，还没完），如果之前本task正在处理接收请求，这里也不为NULL(为了其他进程)，
     这里将传输中间数据结构保存在binder_transaction链表顶部。这个transaction_stack实际
 	上是管理这一个链表，只不过这个指针时时指向最新加入该链表的成员，最先加入的成员在最底部，有点类似于
 	stack，所以这里取名叫transaction_stack。
@@ -1634,6 +1627,7 @@ if (reply) {
 	// 添加到请求线程，也就是自己的待处理任务列表
 	list_add_tail(&tcomplete->entry, &thread->todo);
 	// 唤醒目标进程，查看是否需要唤醒，如果target_wait！=null
+	/* 当前task等待在task自己的等待队列中(binder_thread.todo)，永远只有其自己。*/
 	if (target_wait)
 		wake_up_interruptible(target_wait);
 	return;
@@ -2324,14 +2318,18 @@ retry:
 		t->buffer->allow_user_free = 1;
 		{//同步，请求数据 接收方
 		if (cmd == BR_TRANSACTION && !(t->flags & TF_ONE_WAY)) {
-		/* 这表示了同一个binder_transaction在发送task和接收task中都
+		/* 
+		这表示了同一个binder_transaction在发送task和接收task中都
 		有修改的部分。 发送task和接收task的binder_thread.transaction_stack
-		指向的是同一个binder_transcation结构体。*/
+		指向的是同一个binder_transcation结构体。
+		*/
 			t->to_parent = thread->transaction_stack;
 			t->to_thread = thread;
+			// 这句很重要，为了server写返回的时候用的，看看是哪个线程处理的，另外将它设置在栈顶
+			// t->from已经存在 from_parent也存在，
 			thread->transaction_stack = t;
 		} else {
-			// 发送方，等待回复方
+			// 发送方，不等待回复方
 			t->buffer->transaction = NULL;
 			kfree(t);
 			binder_stats_deleted(BINDER_STAT_TRANSACTION);
