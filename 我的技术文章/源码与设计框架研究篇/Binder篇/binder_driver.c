@@ -1378,12 +1378,12 @@ static void binder_transaction(struct binder_proc *proc,
 	else
 		/* 如果是BC_REPLY或者是异步传输，这里不需要记录和返回信息相关的信息。*/
 		t->from = NULL;
-    //事物的目标线程  
-    t->to_thread = target_thread;
+
 	t->sender_euid = proc->tsk->cred->euid;
 	//事务的目标进程  
 	t->to_proc = target_proc;    
-	t->to_thread = target_thread;
+    //事物的目标线程  
+    t->to_thread = target_thread;
 	 // 这个保持不变，驱动不会关心它
 	t->code = tr->code;
 	t->flags = tr->flags;
@@ -1596,12 +1596,14 @@ if (reply) {
 		thread->transaction_stack = t;
   
 	/* 
+
 	如果本次发起传输之前，当前task没有处于通讯过程中的话，这里必然为
 	NULL。而且第一次发起传输时，这里也是为NULl。如果之前有异步传输没处理完，没处理完，就还没有release，
 	那么这里不为null（为了自己，因为自己之前的任务还在执行，还没完），如果之前本task正在处理接收请求，这里也不为NULL(为了其他进程)，
     这里将传输中间数据结构保存在binder_transaction链表顶部。这个transaction_stack实际
 	上是管理这一个链表，只不过这个指针时时指向最新加入该链表的成员，最先加入的成员在最底部，有点类似于
 	stack，所以这里取名叫transaction_stack。
+
 	*/
 	} 
 	// 异步传输，不需要返回
@@ -2065,6 +2067,7 @@ retry:
    该标志表示当前task是要去等待处理proc中全局的todo还是自己本task的todo队列中的任务。
    两个条件决定这个标志是否为1，当前task的binder_transaction这个链表为NULL, 它记录着
    本task上是否有传输正在进行；第二个条件是当前task的私有任务队列为NULL。
+   对于自己，一定是线程，对于目标，不一定是线程，可能是进程
    */
 	wait_for_proc_work = thread->transaction_stack == NULL &&
 				list_empty(&thread->todo);
@@ -2318,14 +2321,15 @@ retry:
 		t->buffer->allow_user_free = 1;
 		{//同步，请求数据 接收方
 		if (cmd == BR_TRANSACTION && !(t->flags & TF_ONE_WAY)) {
-		/* 
+		/* vvvvv
 		这表示了同一个binder_transaction在发送task和接收task中都
 		有修改的部分。 发送task和接收task的binder_thread.transaction_stack
 		指向的是同一个binder_transcation结构体。
 		*/
 			t->to_parent = thread->transaction_stack;
+			// 这里给返回的请求端用
 			t->to_thread = thread;
-			// 这句很重要，为了server写返回的时候用的，看看是哪个线程处理的，另外将它设置在栈顶
+			// 这句很重要，为了server写返回的时候用的，看看是哪个线程处理的，另外将它设置在栈顶，栈顶的一定先处理，其他的都睡眠
 			// t->from已经存在 from_parent也存在，
 			thread->transaction_stack = t;
 		} else {
